@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:15
+    container_name: postgres_db_12
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rsh
+      LANG: 'en_US.UTF-8'
+      LANGUAGE: 'en_US.UTF-8'
+      LC_ALL: 'en_US.UTF-8'
+      LC_COLLATE: 'en_US.UTF-8'
+      LC_CTYPE: 'en_US.UTF-8'
+      ENCODING: 'UTF8'
+    ports:
+      - '5499:5432'
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - test
+    restart: always
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: always
+    ports:
+      - '6379:6379'
+    networks:
+      - test
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  test:
+    name: test
+    driver: bridge
+volumes:
+  postgres_data:
