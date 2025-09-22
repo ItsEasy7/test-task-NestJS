@@ -1,2 +1,2 @@
-npm i
-npm run start:dev - для тестов
+``npm i``
+``npm run start:dev`` - для тестов
