@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { User } from 'src/user/entity/user.entity';
-import { RefreshToken } from 'src/user/entity/token.entity';
 import { LoginLog } from 'src/auth/entity/login.entity';
 import { Posts } from 'src/posts/entity/posts.entity';
 
@@ -20,7 +19,7 @@ import { Posts } from 'src/posts/entity/posts.entity';
         database: configService.get<string>('DB_NAME', 'test_task'),
         autoLoadEntities: true,
         synchronize: false,
-        entities: [User, Posts, RefreshToken, LoginLog],
+        entities: [User, Posts, LoginLog],
         // migrations: ['migrations/*.ts'],
       }),
     }),

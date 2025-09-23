@@ -27,4 +27,41 @@ export class RedisService {
   async ttl(key: string): Promise<number> {
     return this.redis.ttl(key);
   }
+
+  async zadd(
+    key: string,
+    score: number,
+    member: string,
+    ttl?: number,
+  ): Promise<void> {
+    await this.redis.zadd(key, score, member);
+    if (ttl) {
+      await this.redis.expire(key, ttl);
+    }
+  }
+
+  async zrange(key: string, start: number, stop: number): Promise<string[]> {
+    return this.redis.zrange(key, start, stop);
+  }
+
+  async zrem(key: string, member: string): Promise<void> {
+    await this.redis.zrem(key, member);
+  }
+
+  async zcard(key: string): Promise<number> {
+    return this.redis.zcard(key);
+  }
+
+  async zremrangebyrank(
+    key: string,
+    start: number,
+    stop: number,
+  ): Promise<void> {
+    await this.redis.zremrangebyrank(key, start, stop);
+  }
+
+  async exists(key: string): Promise<boolean> {
+    const result = await this.redis.exists(key);
+    return result === 1;
+  }
 }

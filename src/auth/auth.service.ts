@@ -17,7 +17,6 @@ import {
   ResendCodeDto,
 } from './dto/auth.dto';
 import { ConfigService } from '@nestjs/config';
-import { RefreshToken } from 'src/user/entity/token.entity';
 import { RedisService } from './redis.service';
 import { LoginLog } from './entity/login.entity';
 import * as bcrypt from 'bcrypt';
@@ -33,8 +32,6 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly redisService: RedisService,
     private readonly mailService: MailService,
-    @InjectRepository(RefreshToken)
-    private readonly refreshTokenRepository: Repository<RefreshToken>,
     @InjectRepository(LoginLog)
     private readonly loginLogRepository: Repository<LoginLog>,
   ) {}
@@ -179,11 +176,7 @@ export class AuthService {
       },
     );
 
-    await this.refreshTokenRepository.save({
-      token: refreshToken,
-      user,
-      createdAt: new Date(),
-    });
+    await this.storeRefreshToken(user.id, refreshToken);
 
     await this.loginLogRepository.save({
       user,
@@ -197,36 +190,46 @@ export class AuthService {
   }
 
   async logout(refreshToken: string): Promise<void> {
-    await this.refreshTokenRepository.delete({ token: refreshToken });
-  }
-
-  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
-    let payload: any;
     try {
-      payload = this.jwtService.verify(refreshToken, {
+      const payload = this.jwtService.verify(refreshToken, {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
+      await this.removeRefreshToken(payload.userId, refreshToken);
     } catch {
       throw new ForbiddenException('Refresh токен недействителен');
     }
-    const tokenInDb = await this.refreshTokenRepository.findOne({
-      where: { token: refreshToken },
-      relations: ['user'],
-    });
-    await this.validateUser(payload.userId);
-    if (!tokenInDb) throw new ForbiddenException('Refresh токен не найден');
-    const user = tokenInDb.user;
-    const accessToken = this.jwtService.sign(
-      { userId: user.id },
-      {
-        secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.configService.get<string>(
-          'JWT_ACCESS_EXPIRES_IN',
-          '15m',
-        ),
-      },
-    );
-    return { accessToken };
+  }
+
+  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
+    try {
+      const payload = this.jwtService.verify(refreshToken, {
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      });
+    
+      const isValidToken = await this.isRefreshTokenValid(
+        payload.userId,
+        refreshToken,
+      );
+      if (!isValidToken) {
+        throw new Error();
+      }
+
+      await this.validateUser(payload.userId);
+
+      const accessToken = this.jwtService.sign(
+        { userId: payload.userId },
+        {
+          secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+          expiresIn: this.configService.get<string>(
+            'JWT_ACCESS_EXPIRES_IN',
+            '15m',
+          ),
+        },
+      );
+      return { accessToken };
+    } catch {
+      throw new ForbiddenException('Refresh токен недействителен');
+    }
   }
 
   async changePassword(
@@ -378,5 +381,73 @@ export class AuthService {
     await this.redisService.set(redisKey, code, this.codeTTL * 60);
     await this.mailService.sendMail(user.login, dto.codeType, { code });
     return { message: 'Код отправлен на почту' };
+  }
+
+  /**
+   * Сохраняет refresh токен для пользователя в Redis.
+   */
+  private async storeRefreshToken(
+    userId: number,
+    refreshToken: string,
+  ): Promise<void> {
+    const redisKey = `refresh_tokens:${userId}`;
+    const timestamp = Date.now();
+    const refreshTtl = this.parseRefreshTokenTtl();
+
+    await this.redisService.zadd(redisKey, timestamp, refreshToken, refreshTtl);
+
+    const tokenCount = await this.redisService.zcard(redisKey);
+    
+    if (tokenCount > 5) {
+      const tokensToRemove = tokenCount - 5;
+      await this.redisService.zremrangebyrank(redisKey, 0, tokensToRemove - 1);
+    }
+  }
+
+  /**
+   * Удаляет refresh токен для пользователя из Redis.
+   */
+  private async removeRefreshToken(
+    userId: number,
+    refreshToken: string,
+  ): Promise<void> {
+    const redisKey = `refresh_tokens:${userId}`;
+    await this.redisService.zrem(redisKey, refreshToken);
+  }
+
+  /**
+   * Проверяет, существует ли данный refresh токен для пользователя в Redis.
+   * @returns true, если токен существует, иначе false
+  */
+  private async isRefreshTokenValid(
+    userId: number,
+    refreshToken: string,
+  ): Promise<boolean> {
+    const redisKey = `refresh_tokens:${userId}`;
+    const tokens = await this.redisService.zrange(redisKey, 0, -1);
+    return tokens.includes(refreshToken);
+  }
+
+  /**
+   * Парсит значение TTL для refresh токена из конфигурации.
+   * @returns TTL refresh токена в секундах
+   */
+  private parseRefreshTokenTtl(): number {
+    const refreshExpiresIn = this.configService.get<string>(
+      'JWT_REFRESH_EXPIRES_IN',
+      '7d',
+    );
+    
+    if (refreshExpiresIn.endsWith('d')) {
+      return parseInt(refreshExpiresIn) * 24 * 60 * 60;
+    } else if (refreshExpiresIn.endsWith('h')) {
+      return parseInt(refreshExpiresIn) * 60 * 60;
+    } else if (refreshExpiresIn.endsWith('m')) {
+      return parseInt(refreshExpiresIn) * 60;
+    } else if (refreshExpiresIn.endsWith('s')) {
+      return parseInt(refreshExpiresIn);
+    }
+    
+    return 7 * 24 * 60 * 60;
   }
 }

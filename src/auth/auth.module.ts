@@ -4,7 +4,6 @@ import { AuthController } from './auth.controller';
 import { UserModule } from 'src/user/user.module';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { RefreshToken } from 'src/user/entity/token.entity';
 import { RedisService } from './redis.service';
 import { LoginLog } from './entity/login.entity';
 import { MailService } from './mail.service';
@@ -12,7 +11,7 @@ import { MailService } from './mail.service';
   imports: [
     UserModule,
     JwtModule.register({}),
-    TypeOrmModule.forFeature([RefreshToken, LoginLog]),
+    TypeOrmModule.forFeature([LoginLog]),
   ],
   controllers: [AuthController],
   providers: [AuthService, RedisService, MailService],

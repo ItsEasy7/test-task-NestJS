@@ -9,7 +9,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './entity/user.entity';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { RefreshToken } from './entity/token.entity';
 import { CreateUserDto, LoginDto, UpdateUserDto } from '../auth/dto/auth.dto';
 import { PaginatedResponse } from 'src/pagination/dto/paginated-response.dto';
 import { PaginationService } from 'src/pagination/pagination.service';
@@ -56,10 +55,6 @@ export class UserService {
       .set({ isActive: false })
       .where('id = :id', { id: userId })
       .execute();
-
-    await this.userRepository.manager.delete(RefreshToken, {
-      user: { id: userId },
-    });
   }
 
   async activateUser(userId: number): Promise<void> {

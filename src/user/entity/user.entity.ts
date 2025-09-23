@@ -8,7 +8,6 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { RefreshToken } from './token.entity';
 import { Transform } from 'class-transformer';
 import { Posts } from 'src/posts/entity/posts.entity';
 
@@ -34,11 +33,6 @@ export class User {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
-
-  @OneToMany(() => RefreshToken, (refreshToken) => refreshToken.user, {
-    cascade: true,
-  })
-  refreshTokens: RefreshToken[];
 
   @OneToMany(() => Posts, (posts) => posts.user)
   posts: Posts[];
