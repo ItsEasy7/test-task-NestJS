@@ -25,10 +25,10 @@ export class UserService {
 
   async getOne(
     userId: number,
-  ): Promise<Pick<User, 'fio' | 'login' | 'id' | 'isActive'>> {
+  ): Promise<Omit<User, 'password' | 'posts'>> {
     const user = await this.userRepository.findOne({
-      select: ['fio', 'login', 'id', 'isActive'],
-      where: { id: userId },
+      select: ['id', 'fio', 'login', 'isActive', 'createdAt', 'updatedAt'],
+      where: { id: userId, isActive: true },
     });
     if (!user) throw new NotFoundException('Такого пользователя не существует');
     return user;
@@ -69,7 +69,7 @@ export class UserService {
   async updateUser(
     userId: number,
     dto: UpdateUserDto,
-  ): Promise<Pick<User, 'fio' | 'login'>> {
+  ): Promise<Omit<User, 'password' | 'posts'>> {
     await this.userRepository
       .createQueryBuilder()
       .update(User)
