@@ -50,7 +50,7 @@ export class AuthService {
     const ttl = await this.redisService.ttl(redisKey);
     if (ttl > 0) {
       return {
-        message: `Подождите ${ttl} секунд до повторной отправки кода`,
+        message: `Подождите ${this.formatSecondsText(ttl)} до повторной отправки кода`,
         retryAfter: ttl,
       };
     }
@@ -64,43 +64,31 @@ export class AuthService {
   async register(
     dto: RegisterDto,
   ): Promise<{ message: string; retryAfter?: number }> {
-    const existingUser = await this.userService.findByLogin(dto.login);
-    if (existingUser) {
+    if (await this.userService.findByLogin(dto.login)) {
       throw new ForbiddenException(
         'Пользователь с таким логином уже существует',
       );
     }
 
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
-    const insertResult = await this.userService.userRepository
-      .createQueryBuilder()
-      .insert()
-      .into('user')
-      .values({
-        login: dto.login,
-        password: hashedPassword,
-        fio: dto.fio,
-        isActive: true,
-        createdAt: new Date(),
-      })
-      .returning('*')
-      .execute();
-
-    const user = insertResult.raw[0];
-    const code = Math.floor(100000 + Math.random() * 900000);
-    const redisKey = `auth:code:${user.id}`;
+    const redisKey = `auth:register:${dto.login}`;
     const ttl = await this.redisService.ttl(redisKey);
     if (ttl > 0) {
       return {
-        message: `Подождите ${ttl} секунд до повторной отправки кода`,
+        message: `Подождите ${this.formatSecondsText(ttl)} до повторной отправки кода`,
         retryAfter: ttl,
       };
     }
-    await this.redisService.set(redisKey, code, this.codeTTL * 60);
-    await this.mailService.sendMail(user.login, MailType.REGISTRATION_CODE, {
+    
+    const code = Math.floor(100000 + Math.random() * 900000);
+    await this.redisService.set(redisKey, JSON.stringify({
+      code,
+      ...dto,
+    }), this.codeTTL * 60);
+    
+    await this.mailService.sendMail(dto.login, MailType.REGISTRATION_CODE, {
       code,
     });
-    return { message: 'Пользователь зарегистрирован. Код отправлен на почту' };
+    return { message: 'Код отправлен на почту для завершения регистрации' };
   }
 
   async verify(
@@ -108,83 +96,93 @@ export class AuthService {
     ip: string,
     userAgent: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
-    const user = await this.userService.findByLogin(dto.login);
-    if (!user) throw new UnauthorizedException('Пользователь не найден');
+    let user = await this.userService.findByLogin(dto.login);
+    const isRegistration = !user;
+    
+    const registrationData = isRegistration ? 
+      await this.redisService.get(`auth:register:${dto.login}`) : null;
+    
+    if (isRegistration && !registrationData) {
+      throw new UnauthorizedException('Пользователь не найден или данные регистрации истекли');
+    }
 
-    const codeKey = `auth:code:${user.id}`;
-    const attemptsKey = `auth:attempts:${user.id}`;
+    const codeKey = isRegistration ? `auth:register:${dto.login}` : `auth:code:${user!.id}`;
+    const attemptsKey = isRegistration ? `auth:register:attempts:${dto.login}` : `auth:attempts:${user!.id}`;
 
-    const currentAttemptsRaw = await this.redisService.get(attemptsKey);
-    const currentAttempts = +(currentAttemptsRaw ?? 0);
+    const currentAttempts = +(await this.redisService.get(attemptsKey) ?? 0);
 
     if (currentAttempts >= 5) {
       const attemptsTtl = await this.redisService.ttl(attemptsKey);
-
       if (attemptsTtl > 0) {
         throw new ForbiddenException(
-          `Превышено количество попыток. Повторите через ${attemptsTtl} сек.`,
+          `Превышено количество попыток. Повторите через ${this.formatSecondsText(attemptsTtl)}.`,
         );
       }
     }
 
-    const storedCode = await this.redisService.get(codeKey);
+    const storedData = await this.redisService.get(codeKey);
+    const storedCode = isRegistration ? 
+      JSON.parse(storedData!).code : (storedData || '');
+
     if (!storedCode || storedCode !== dto.code) {
       const nextAttempts = currentAttempts + 1;
 
       if (nextAttempts >= 5) {
         await this.redisService.set(attemptsKey, nextAttempts, 600);
-        await this.loginLogRepository.save({
-          user,
-          ip,
-          userAgent,
-          createdAt: new Date(),
-          success: false,
-        });
-
+        if (!isRegistration) {
+          await this.loginLogRepository.save({
+            user,
+            ip,
+            userAgent,
+            createdAt: new Date(),
+            success: false,
+          });
+        }
         throw new ForbiddenException(
           'Превышено количество попыток. Повторите через 10 минут.',
         );
-      } else {
-        await this.redisService.set(attemptsKey, nextAttempts, 0);
       }
-
+      
+      await this.redisService.set(attemptsKey, nextAttempts, 0);
       throw new ForbiddenException('Неверный или истекший код');
     }
 
-    await this.redisService.delete(codeKey);
-    await this.redisService.delete(attemptsKey);
+    if (isRegistration) {
+      user = await this.createUserFromRegistration(storedData!);
+    }
 
-    const accessToken = this.jwtService.sign(
-      { userId: user.id },
-      {
-        secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.configService.get<string>(
-          'JWT_ACCESS_EXPIRES_IN',
-          '15m',
-        ),
-      },
-    );
+    await Promise.all([
+      this.redisService.delete(codeKey),
+      this.redisService.delete(attemptsKey)
+    ]);
 
-    const refreshToken = this.jwtService.sign(
-      { userId: user.id },
-      {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>(
-          'JWT_REFRESH_EXPIRES_IN',
-          '7d',
-        ),
-      },
-    );
+    const [accessToken, refreshToken] = [
+      this.jwtService.sign(
+        { userId: user!.id },
+        {
+          secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+          expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
+        },
+      ),
+      this.jwtService.sign(
+        { userId: user!.id },
+        {
+          secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+          expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
+        },
+      )
+    ];
 
-    await this.storeRefreshToken(user.id, refreshToken);
-
-    await this.loginLogRepository.save({
-      user,
-      ip,
-      userAgent,
-      createdAt: new Date(),
-      success: true,
-    });
+    await Promise.all([
+      this.storeRefreshToken(user!.id, refreshToken),
+      this.loginLogRepository.save({
+        user: user!,
+        ip,
+        userAgent,
+        createdAt: new Date(),
+        success: true,
+      })
+    ]);
 
     return { accessToken, refreshToken };
   }
@@ -267,7 +265,7 @@ export class AuthService {
     const ttl = await this.redisService.ttl(redisKey);
     if (ttl > 0) {
       return {
-        message: `Подождите ${ttl} секунд до повторной отправки кода`,
+        message: `Подождите ${this.formatSecondsText(ttl)} до повторной отправки кода`,
         retryAfter: ttl,
       };
     }
@@ -301,7 +299,7 @@ export class AuthService {
 
       if (attemptsTtl > 0) {
         throw new ForbiddenException(
-          `Превышено количество попыток. Повторите через ${attemptsTtl} сек.`,
+          `Превышено количество попыток. Повторите через ${this.formatSecondsText(attemptsTtl)}.`,
         );
       }
     }
@@ -350,36 +348,50 @@ export class AuthService {
   async resendCode(
     dto: ResendCodeDto,
   ): Promise<{ message: string; retryAfter?: number }> {
-    const user = await this.userService.findByLogin(dto.login);
-    if (!user) {
-      throw new UnauthorizedException('Пользователь не найден');
-    }
-
-    const code = Math.floor(100000 + Math.random() * 900000);
     let redisKey: string;
+    
+    if (dto.codeType === MailType.REGISTRATION_CODE) {
+      const registrationData = await this.redisService.get(`auth:register:${dto.login}`);
+      if (!registrationData) {
+        throw new UnauthorizedException('Данные регистрации не найдены или истекли');
+      }
+      redisKey = `auth:register:${dto.login}`;
+      
+      const ttl = await this.redisService.ttl(redisKey);
+      if (ttl > 0) {
+        return {
+          message: `Подождите ${this.formatSecondsText(ttl)} до повторной отправки кода`,
+          retryAfter: ttl,
+        };
+      }
 
-    switch (dto.codeType) {
-      case MailType.VERIFICATION_CODE:
-      case MailType.REGISTRATION_CODE:
-        redisKey = `auth:code:${user.id}`;
-        break;
-      case MailType.RECOVERY_CODE:
-        redisKey = `restore:code:${user.id}`;
-        break;
-      default:
-        throw new UnauthorizedException('Неподдерживаемый тип кода');
+      const parsedData = JSON.parse(registrationData);
+      parsedData.code = Math.floor(100000 + Math.random() * 900000);
+      await this.redisService.set(redisKey, JSON.stringify(parsedData), this.codeTTL * 60);
+      await this.mailService.sendMail(dto.login, dto.codeType, { code: parsedData.code });
+      
+    } else {
+      const user = await this.userService.findByLogin(dto.login);
+      if (!user) {
+        throw new UnauthorizedException('Пользователь не найден');
+      }
+
+      redisKey = dto.codeType === MailType.VERIFICATION_CODE ? 
+        `auth:code:${user.id}` : `restore:code:${user.id}`;
+
+      const ttl = await this.redisService.ttl(redisKey);
+      if (ttl > 0) {
+        return {
+          message: `Подождите ${this.formatSecondsText(ttl)} до повторной отправки кода`,
+          retryAfter: ttl,
+        };
+      }
+
+      const code = Math.floor(100000 + Math.random() * 900000);
+      await this.redisService.set(redisKey, code, this.codeTTL * 60);
+      await this.mailService.sendMail(dto.login, dto.codeType, { code });
     }
-
-    const ttl = await this.redisService.ttl(redisKey);
-    if (ttl > 0) {
-      return {
-        message: `Подождите ${ttl} секунд до повторной отправки кода`,
-        retryAfter: ttl,
-      };
-    }
-
-    await this.redisService.set(redisKey, code, this.codeTTL * 60);
-    await this.mailService.sendMail(user.login, dto.codeType, { code });
+    
     return { message: 'Код отправлен на почту' };
   }
 
@@ -449,5 +461,53 @@ export class AuthService {
     }
     
     return 7 * 24 * 60 * 60;
+  }
+
+  /**
+   * Создание пользователя 
+   * @param registrationDataString 
+   * @returns userData
+   */
+  private async createUserFromRegistration(registrationDataString: string): Promise<any> {
+    const registrationData = JSON.parse(registrationDataString);
+    const hashedPassword = await bcrypt.hash(registrationData.password, 10);
+    
+    const insertResult = await this.userService.userRepository
+      .createQueryBuilder()
+      .insert()
+      .into('user')
+      .values({
+        login: registrationData.login,
+        password: hashedPassword,
+        fio: registrationData.fio,
+        isActive: true,
+        createdAt: new Date(),
+      })
+      .returning('*')
+      .execute();
+
+    return insertResult.raw[0];
+  }
+
+  /**
+   * Форматирует количество секунд с правильными русскими окончаниями
+   * @param seconds количество секунд
+   * @returns отформатированную строку
+   */
+  private formatSecondsText(seconds: number): string {
+    const lastDigit = seconds % 10;
+    const lastTwoDigits = seconds % 100;
+
+    if (lastTwoDigits >= 11 && lastTwoDigits <= 19) {
+      return `${seconds} секунд`;
+    }
+
+    if (lastDigit === 1) {
+      return `${seconds} секунду`;
+    } else if (lastDigit >= 2 && lastDigit <= 4) {
+      return `${seconds} секунды`;
+    } else {
+      return `${seconds} секунд`;
+    }
   }
 }

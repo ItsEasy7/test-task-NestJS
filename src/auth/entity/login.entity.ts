@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  JoinColumn,
 } from 'typeorm';
 import { User } from 'src/user/entity/user.entity';
 
@@ -12,7 +13,11 @@ export class LoginLog {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @Column({ name: 'user_id', comment: 'ID пользователя, добавившего пост' })
+  userId: number;
+
+  @ManyToOne(() => User, (user) => user.posts)
+  @JoinColumn({ name: 'user_id' })
   user: User;
 
   @Column({ name: 'ip', type: 'varchar', length: 45, nullable: true })

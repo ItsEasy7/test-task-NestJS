@@ -18,26 +18,15 @@ export class InitEntities implements MigrationInterface {
       )
     `);
     await queryRunner.query(`
-      CREATE TABLE "refresh_token" (
-        "id" SERIAL NOT NULL,
-        "token" character varying NOT NULL,
-        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
-        "expires_at" TIMESTAMP,
-        "userId" integer,
-        CONSTRAINT "PK_refresh_token_id" PRIMARY KEY ("id"),
-        CONSTRAINT "FK_refresh_token_user" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE
-      )
-    `);
-    await queryRunner.query(`
       CREATE TABLE "login_log" (
         "id" SERIAL NOT NULL,
         "ip" character varying(45),
         "user_agent" character varying(512),
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
         "success" boolean NOT NULL DEFAULT true,
-        "userId" integer,
+        "user_id" integer,
         CONSTRAINT "PK_login_log_id" PRIMARY KEY ("id"),
-        CONSTRAINT "FK_login_log_user" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE
+        CONSTRAINT "FK_login_log_user" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE
       )
     `);
     await queryRunner.query(`
@@ -67,15 +56,11 @@ export class InitEntities implements MigrationInterface {
     await queryRunner.query(`
       CREATE INDEX "idx_posts_user_id" ON "posts" ("user_id");
     `);
-    await queryRunner.query(`
-      CREATE INDEX "idx_refresh_token_user_id" ON "refresh_token" ("userId");
-    `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP TABLE "posts"`);
     await queryRunner.query(`DROP TABLE "login_log"`);
-    await queryRunner.query(`DROP TABLE "refresh_token"`);
     await queryRunner.query(`DROP TABLE "user"`);
   }
 }
